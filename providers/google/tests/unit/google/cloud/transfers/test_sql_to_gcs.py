@@ -574,6 +574,40 @@ class TestBaseSQLToGCSOperator:
         assert len(df.index) == 0
 
     @pytest.mark.parametrize(
+        ("export_format", "row", "expected_rows"),
+        (
+            ("csv", [0, False, ""], [["0", "False", ""], ["NULL", "NULL", "NULL"]]),
+            ("parquet", ["", "", ""], [["", "", ""], ["NULL", "NULL", "NULL"]]),
+        ),
+    )
+    @mock.patch.object(DummySQLToGCSOperator, "convert_type", autospec=True)
+    def test__write_local_data_files_null_marker_replaces_only_none(
+        self, mock_convert_type, export_format, row, expected_rows
+    ):
+        mock_convert_type.side_effect = lambda self, value, schema_type, stringify_dict: value
+        op = DummySQLToGCSOperator(
+            sql=SQL,
+            bucket=BUCKET,
+            filename=FILENAME,
+            task_id=TASK_ID,
+            export_format=export_format,
+            null_marker="NULL",
+        )
+        cursor = MagicMock()
+        cursor.__iter__.return_value = [row, [None, None, None]]
+        cursor.description = CURSOR_DESCRIPTION
+
+        files = op._write_local_data_files(cursor)
+        file = next(files)["file_handle"]
+        file.flush()
+
+        if export_format == "csv":
+            df = pd.read_csv(file.name, dtype=str, keep_default_na=False)
+        else:
+            df = pd.read_parquet(file.name)
+        assert df.values.tolist() == expected_rows
+
+    @pytest.mark.parametrize(
         ("filename", "expected_name"),
         (
             ("file_{}.csv", "/"),

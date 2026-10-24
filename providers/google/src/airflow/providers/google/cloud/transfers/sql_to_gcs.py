@@ -298,12 +298,12 @@ class BaseSQLToGCSOperator(BaseOperator):
             if self.export_format == "csv":
                 row2 = self.convert_types(schema, col_type_dict, row)
                 if self.null_marker is not None:
-                    row2 = [value or self.null_marker for value in row2]
+                    row2 = [self.null_marker if value is None else value for value in row2]
                 csv_writer.writerow(row2)
             elif self.export_format == "parquet":
                 row2 = self.convert_types(schema, col_type_dict, row)
                 if self.null_marker is not None:
-                    row2 = [value or self.null_marker for value in row2]
+                    row2 = [self.null_marker if value is None else value for value in row2]
                 rows_buffer.append(row2)
                 if len(rows_buffer) >= self.parquet_row_group_size:
                     self._write_rows_to_parquet(parquet_writer, rows_buffer)
