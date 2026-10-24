@@ -1049,7 +1049,7 @@ class TestBigQueryTableExistenceTrigger:
     async def test_table_exists(self, mock_get_table_client, table_existence_trigger):
         """Test BigQueryTableExistenceTrigger._table_exists async function with mocked value
         and mocked return value"""
-        hook = BigQueryTableAsyncHook()
+        hook = BigQueryTableAsyncHook(use_legacy_sql=False)
         mock_get_table_client.return_value = AsyncMock(Table)
 
         res = await table_existence_trigger._table_exists(
@@ -1061,7 +1061,7 @@ class TestBigQueryTableExistenceTrigger:
     @mock.patch("airflow.providers.google.cloud.hooks.bigquery.BigQueryTableAsyncHook.get_table_client")
     async def test_table_exists_exception(self, mock_get_table_client, table_existence_trigger):
         """Test BigQueryTableExistenceTrigger._table_exists async function with exception and return False"""
-        hook = BigQueryTableAsyncHook()
+        hook = BigQueryTableAsyncHook(use_legacy_sql=False)
         mock_get_table_client.side_effect = ClientResponseError(
             history=(),
             request_info=RequestInfo(
@@ -1084,7 +1084,7 @@ class TestBigQueryTableExistenceTrigger:
     @mock.patch("airflow.providers.google.cloud.hooks.bigquery.BigQueryTableAsyncHook.get_table_client")
     async def test_table_exists_raise_exception(self, mock_get_table_client, table_existence_trigger):
         """Test BigQueryTableExistenceTrigger._table_exists async function with raise exception"""
-        hook = BigQueryTableAsyncHook()
+        hook = BigQueryTableAsyncHook(use_legacy_sql=False)
         mock_get_table_client.side_effect = ClientResponseError(
             history=(),
             request_info=RequestInfo(

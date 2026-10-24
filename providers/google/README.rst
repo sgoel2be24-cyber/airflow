@@ -63,6 +63,7 @@ PIP package                                 Version required
 ``apache-airflow``                          ``>=2.11.0``
 ``apache-airflow-providers-common-compat``  ``>=1.23.0``
 ``apache-airflow-providers-common-sql``     ``>=1.32.0``
+``aiohttp``                                 ``>=3.10.0``
 ``asgiref``                                 ``>=3.5.2; python_version < "3.14"``
 ``asgiref``                                 ``>=3.11.1; python_version >= "3.14"``
 ``dill``                                    ``>=0.2.3``

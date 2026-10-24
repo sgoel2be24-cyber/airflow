@@ -20,7 +20,6 @@ import asyncio
 from collections.abc import AsyncIterator, Sequence
 from typing import TYPE_CHECKING, Any, SupportsAbs, cast
 
-from aiohttp import ClientSession
 from aiohttp.client_exceptions import ClientResponseError
 from asgiref.sync import sync_to_async
 
@@ -31,6 +30,7 @@ from airflow.triggers.base import BaseTrigger, TriggerEvent
 from airflow.utils.state import TaskInstanceState
 
 if TYPE_CHECKING:
+    from aiohttp import ClientSession
     from sqlalchemy.orm.session import Session
 
 if not AIRFLOW_V_3_3_PLUS:
@@ -793,7 +793,7 @@ class BigQueryTableExistenceTrigger(BaseTrigger):
             The connection supplied to the hook must provide
             access to the specified project.
         """
-        async with ClientSession() as session:
+        async with hook.open_client_session() as session:
             try:
                 client = await hook.get_table_client(
                     dataset=dataset, table_id=table_id, project_id=project_id, session=session
@@ -944,7 +944,7 @@ class BigQueryStreamingBufferEmptyTrigger(BaseTrigger):
         table_uri = f"{self.project_id}:{self.dataset_id}.{self.table_id}"
         try:
             hook = self._get_async_hook()
-            async with ClientSession() as session:
+            async with hook.open_client_session() as session:
                 while True:
                     self.log.info("Checking streaming buffer for table %s", table_uri)
                     is_empty = await self._is_streaming_buffer_empty(

@@ -1215,6 +1215,10 @@ connection-types:
         label: "Quota Project ID"
         schema:
           type: ["string", "null"]
+      proxy:
+        label: "Proxy URL"
+        schema:
+          type: ["string", "null"]
   - hook-class-name: airflow.providers.google.cloud.hooks.spanner.SpannerHook
     connection-type: gcpspanner
   - hook-class-name: airflow.providers.google.cloud.hooks.dataprep.GoogleDataprepHook
@@ -1296,6 +1300,10 @@ connection-types:
           default: false
       quota_project_id:
         label: "Quota Project ID"
+        schema:
+          type: ["string", "null"]
+      proxy:
+        label: "Proxy URL"
         schema:
           type: ["string", "null"]
       use_legacy_sql:

@@ -24,6 +24,7 @@ from io import StringIO
 from pathlib import Path
 from unittest import mock
 from unittest.mock import patch
+from urllib.parse import quote
 
 import google.auth
 import google.auth.compute_engine
@@ -35,7 +36,7 @@ from google.auth.exceptions import GoogleAuthError, RefreshError
 from google.cloud.exceptions import Forbidden
 
 from airflow import version
-from airflow.providers.common.compat.sdk import AirflowException
+from airflow.providers.common.compat.sdk import AirflowException, AirflowOptionalProviderFeatureException
 from airflow.providers.google.cloud.utils.credentials_provider import _DEFAULT_SCOPES
 from airflow.providers.google.common.hooks import base_google as hook
 from airflow.providers.google.common.hooks.base_google import GoogleBaseHook, is_refresh_credentials_exception
@@ -53,6 +54,8 @@ MODULE_NAME = "airflow.providers.google.common.hooks.base_google"
 PROJECT_ID = "PROJECT_ID"
 ENV_VALUE = "/tmp/a"
 SCOPES = ["https://www.googleapis.com/auth/cloud-platform"]
+PROXY = "http://proxy.example.com:3128"
+PROXIES = {"http": PROXY, "https": PROXY}
 
 
 class NoForbiddenAfterCount:
@@ -1167,6 +1170,76 @@ class TestGoogleBaseAsyncHook:
         token = await instance.get_token()
         assert await token.get_project() == "CONN_PROJECT_ID"
         assert await token.get() == "IMPERSONATED_ACCESS_TOKEN"
+
+
+class TestGoogleBaseHookProxy:
+    def setup_method(self):
+        self.instance = hook.GoogleBaseHook()
+        self.instance.extras = {"proxy": PROXY}
+
+    @mock.patch(f"{MODULE_NAME}.importlib.util.find_spec", autospec=True)
+    @mock.patch(f"{MODULE_NAME}.GoogleBaseHook.get_credentials", autospec=True)
+    def test_authorize_uses_connection_proxy(self, mock_get_credentials, mock_find_spec, monkeypatch):
+        monkeypatch.setenv("NO_PROXY", "*")
+        proxy_info = self.instance._authorize().http.proxy_info
+        assert (proxy_info.proxy_host, proxy_info.proxy_port) == ("proxy.example.com", 3128)
+        assert not proxy_info.bypass_host("bigquery.googleapis.com")
+
+    @mock.patch(f"{MODULE_NAME}.importlib.util.find_spec", autospec=True, return_value=None)
+    @mock.patch(f"{MODULE_NAME}.GoogleBaseHook.get_credentials", autospec=True)
+    def test_authorize_with_proxy_requires_pysocks(self, mock_get_credentials, mock_find_spec):
+        with pytest.raises(AirflowOptionalProviderFeatureException, match="PySocks"):
+            self.instance._authorize()
+
+    @pytest.mark.parametrize("get_session", ["_get_requests_session", "_get_authorized_session"])
+    @mock.patch(f"{MODULE_NAME}.GoogleBaseHook.get_credentials", autospec=True)
+    def test_session_proxy_takes_precedence_over_environment(
+        self, mock_get_credentials, get_session, monkeypatch
+    ):
+        monkeypatch.setenv("HTTPS_PROXY", "http://env-proxy.example.com:8080")
+        session = getattr(self.instance, get_session)()
+        settings = session.merge_environment_settings("https://bigquery.googleapis.com", {}, None, None, None)
+        assert settings["proxies"]["https"] == PROXY
+
+    @mock.patch(f"{MODULE_NAME}.GoogleBaseHook.get_credentials", autospec=True)
+    def test_authorized_session_refreshes_credentials_through_proxy(self, mock_get_credentials):
+        session = self.instance._get_authorized_session()
+        assert session.credentials is mock_get_credentials.return_value
+        assert session._auth_request.session.proxies == PROXIES
+
+    def test_without_proxy(self):
+        self.instance.extras = {}
+        assert self.instance._get_authorized_session() is None
+        assert self.instance._get_requests_session().proxies == {}
+
+    @pytest.mark.asyncio
+    async def test_credentials_token_refreshes_through_proxy(self):
+        mock_credentials = mock.MagicMock(spec=google.auth.compute_engine.Credentials)
+        mock_credentials.token = "ACCESS_TOKEN"
+        with mock.patch.object(
+            self.instance, "get_credentials_and_project_id", return_value=(mock_credentials, PROJECT_ID)
+        ):
+            token = await hook._CredentialsToken.from_hook(self.instance)
+        await token.refresh(timeout=10)
+        mock_credentials.refresh.assert_called_once_with(token.auth_request)
+        assert token.auth_request.session.proxies == PROXIES
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("conn_uri", "expected_proxy"),
+        [
+            (f"google-cloud-platform://?proxy={quote(PROXY, safe='')}", PROXY),
+            ("google-cloud-platform://", None),
+        ],
+    )
+    @mock.patch(f"{MODULE_NAME}.ClientSession")
+    async def test_open_client_session(self, mock_client_session, conn_uri, expected_proxy, monkeypatch):
+        monkeypatch.setenv("AIRFLOW_CONN_GOOGLE_CLOUD_DEFAULT", conn_uri)
+        instance = hook.GoogleBaseAsyncHook()
+        instance.sync_hook_class = hook.GoogleBaseHook
+        async with instance.open_client_session() as session:
+            assert session is mock_client_session.return_value.__aenter__.return_value
+        mock_client_session.assert_called_once_with(proxy=expected_proxy)
 
 
 class TestGetFieldWithFalseValues:

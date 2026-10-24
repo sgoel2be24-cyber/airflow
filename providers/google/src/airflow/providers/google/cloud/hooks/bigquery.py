@@ -32,7 +32,6 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast, overload
 
 import pendulum
-from aiohttp import ClientSession as ClientSession
 from asgiref.sync import sync_to_async
 from gcloud.aio.bigquery import Job, Table as Table_async
 from google.cloud.bigquery import (
@@ -86,6 +85,7 @@ from airflow.utils.types import DagRunType
 if TYPE_CHECKING:
     import pandas as pd
     import polars as pl
+    from aiohttp import ClientSession
     from google.api_core.page_iterator import HTTPIterator
     from google.api_core.retry import Retry
     from requests import Session
@@ -271,6 +271,7 @@ class BigQueryHook(GoogleBaseHook, DbApiHook):
             location=location,
             credentials=self.get_credentials(),
             client_options=self.get_client_options(),
+            _http=self._get_authorized_session(),
         )
 
     def get_uri(self) -> str:
@@ -2397,7 +2398,7 @@ class BigQueryAsyncHook(GoogleBaseAsyncHook):
         project_id: str = PROVIDE_PROJECT_ID,
     ) -> dict[str, Any]:
         """Get the BigQuery job output for a given job ID asynchronously."""
-        async with ClientSession() as session:
+        async with self.open_client_session() as session:
             self.log.info("Executing get_job_output..")
             job_client = await self.get_job_instance(project_id, job_id, session)
             job_query_response = await job_client.get_query_results(cast("Session", session))
@@ -2410,7 +2411,7 @@ class BigQueryAsyncHook(GoogleBaseAsyncHook):
         project_id: str = PROVIDE_PROJECT_ID,
     ):
         """Create a new job and get the job_id using gcloud-aio."""
-        async with ClientSession() as session:
+        async with self.open_client_session() as session:
             self.log.info("Executing create_job..")
             job_client = await self.get_job_instance(project_id, "", session)
 
@@ -2431,7 +2432,7 @@ class BigQueryAsyncHook(GoogleBaseAsyncHook):
         :param project_id: Google Cloud Project where the job was running.
         :param location: Location where the job was running.
         """
-        async with ClientSession() as session:
+        async with self.open_client_session() as session:
             token = await self.get_token(session=session)
             job = Job(job_id=job_id, project=project_id, location=location, token=token, session=session)  # type: ignore[arg-type]
 

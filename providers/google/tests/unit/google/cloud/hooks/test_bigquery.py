@@ -118,6 +118,12 @@ class TestBigQueryHookMethods(_BigQueryBaseTestClass):
         )
         assert mock_bigquery_connection.return_value == result
 
+    @mock.patch("airflow.providers.google.cloud.hooks.bigquery.BigQueryHook._get_authorized_session")
+    @mock.patch("airflow.providers.google.cloud.hooks.bigquery.Client")
+    def test_get_client_uses_authorized_session(self, mock_client, mock_get_authorized_session):
+        self.hook.get_client(project_id=PROJECT_ID)
+        assert mock_client.call_args.kwargs["_http"] is mock_get_authorized_session.return_value
+
     def test_bigquery_insert_rows_not_implemented(self):
         with pytest.raises(NotImplementedError):
             self.hook.insert_rows(table="table", rows=[1, 2])
@@ -1833,7 +1839,7 @@ class TestBigQueryAsyncHookMethods:
     @pytest.mark.db_test
     @pytest.mark.asyncio
     @mock.patch("google.auth.default")
-    @mock.patch("airflow.providers.google.cloud.hooks.bigquery.ClientSession")
+    @mock.patch("airflow.providers.google.common.hooks.base_google.ClientSession")
     async def test_get_job_instance(self, mock_session, mock_auth_default):
         mock_credentials = mock.MagicMock(spec=google.auth.compute_engine.Credentials)
         mock_credentials.token = "ACCESS_TOKEN"
@@ -1934,7 +1940,7 @@ class TestBigQueryAsyncHookMethods:
         mock_job_instance.cancel.assert_called_once()
 
     @pytest.mark.asyncio
-    @mock.patch("airflow.providers.google.cloud.hooks.bigquery.ClientSession")
+    @mock.patch("airflow.providers.google.common.hooks.base_google.ClientSession")
     @mock.patch("airflow.providers.google.cloud.hooks.bigquery.BigQueryAsyncHook.get_job_instance")
     async def test_create_job_for_partition_get_with_table(self, mock_job_instance, mock_client_session):
         hook = BigQueryAsyncHook(use_legacy_sql=True)
@@ -1954,7 +1960,7 @@ class TestBigQueryAsyncHookMethods:
         mock_job_client.query.assert_called_once_with(expected_query_request, mock_session)
 
     @pytest.mark.asyncio
-    @mock.patch("airflow.providers.google.cloud.hooks.bigquery.ClientSession")
+    @mock.patch("airflow.providers.google.common.hooks.base_google.ClientSession")
     @mock.patch("airflow.providers.google.cloud.hooks.bigquery.BigQueryAsyncHook.get_job_instance")
     async def test_create_job_for_partition_get(self, mock_job_instance, mock_client_session):
         hook = BigQueryAsyncHook(use_legacy_sql=True)

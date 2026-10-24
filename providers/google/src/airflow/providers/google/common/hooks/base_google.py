@@ -22,20 +22,23 @@ from __future__ import annotations
 import asyncio
 import datetime
 import functools
+import importlib.util
 import json
 import logging
 import os
 import re
 import tempfile
-from collections.abc import Callable, Generator, Sequence
-from contextlib import ExitStack, contextmanager
+from collections.abc import AsyncIterator, Callable, Generator, Sequence
+from contextlib import ExitStack, asynccontextmanager, contextmanager
 from subprocess import check_output
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 import google.auth
 import google_auth_httplib2
+import httplib2
 import requests
 import tenacity
+from aiohttp import ClientSession
 from asgiref.sync import sync_to_async
 from gcloud.aio.auth.token import Token, TokenResponse
 from google.api_core.client_options import ClientOptions
@@ -44,13 +47,18 @@ from google.auth import _cloud_sdk, compute_engine
 from google.auth.environment_vars import CLOUD_SDK_CONFIG_DIR, CREDENTIALS
 from google.auth.exceptions import RefreshError
 from google.auth.transport import _http_client
+from google.auth.transport.requests import AuthorizedSession
 from googleapiclient import discovery
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload, build_http, set_user_agent
 from requests import Session
 
 from airflow import version
-from airflow.providers.common.compat.sdk import AirflowException, BaseHook
+from airflow.providers.common.compat.sdk import (
+    AirflowException,
+    AirflowOptionalProviderFeatureException,
+    BaseHook,
+)
 from airflow.providers.google.cloud.utils.credentials_provider import (
     _get_scopes,
     _get_target_principal_and_delegates,
@@ -59,7 +67,6 @@ from airflow.providers.google.cloud.utils.credentials_provider import (
 from airflow.utils.process_utils import patch_environ
 
 if TYPE_CHECKING:
-    from aiohttp import ClientSession
     from google.auth.credentials import Credentials
 
 log = logging.getLogger(__name__)
@@ -194,6 +201,33 @@ def get_field(extras: dict, field_name: str) -> str | None:
     return None if value == "" else value
 
 
+class _ProxiedSession(Session):
+    """
+    ``requests.Session`` whose own ``proxies`` take precedence over ``HTTP(S)_PROXY`` environment variables.
+
+    ``requests`` otherwise prefers environment proxies over ``Session.proxies``.
+    """
+
+    def merge_environment_settings(self, url, proxies, stream, verify, cert):
+        settings = super().merge_environment_settings(url, proxies, stream, verify, cert)
+        settings["proxies"].update(self.proxies)
+        return settings
+
+
+class _ProxiedAuthorizedSession(_ProxiedSession, AuthorizedSession):
+    """``AuthorizedSession`` whose own ``proxies`` take precedence over environment variables."""
+
+
+def _build_httplib2_proxy_info(proxy: str) -> httplib2.ProxyInfo:
+    # httplib2 tunnels through proxies with PySocks and silently connects directly when it is missing.
+    if importlib.util.find_spec("socks") is None:
+        raise AirflowOptionalProviderFeatureException(
+            "The `proxy` field of the Google Cloud connection requires the PySocks package. "
+            "Install it with `pip install PySocks`."
+        )
+    return httplib2.proxy_info_from_url(proxy, method="https", noproxy="")
+
+
 class GoogleBaseHook(BaseHook):
     """
     A base hook for Google cloud-related hooks.
@@ -232,6 +266,9 @@ class GoogleBaseHook(BaseHook):
         quota purposes. If set, API usage will be charged to this project instead of
         the project associated with the credentials. If not set, the connection's
         ``quota_project_id`` field is used as a fallback.
+
+    Requests to Google APIs are sent through the proxy set in the connection's ``proxy``
+    field, if any, instead of the proxy configured in environment variables.
     """
 
     conn_name_attr = "gcp_conn_id"
@@ -288,6 +325,7 @@ class GoogleBaseHook(BaseHook):
                 lazy_gettext("Anonymous credentials (ignores all other settings)"), default=False
             ),
             "quota_project_id": StringField(lazy_gettext("Quota Project ID"), widget=BS3TextFieldWidget()),
+            "proxy": StringField(lazy_gettext("Proxy URL"), widget=BS3TextFieldWidget()),
         }
 
     @classmethod
@@ -470,10 +508,40 @@ class GoogleBaseHook(BaseHook):
         credentials, _ = self.get_credentials_and_project_id()
         return credentials
 
+    def _get_proxy(self) -> str | None:
+        """Return the proxy URL from the connection's ``proxy`` field."""
+        return self._get_field("proxy")
+
+    def _get_requests_session(self) -> Session:
+        """Return a ``requests`` session routed through the connection's proxy, if one is set."""
+        proxy = self._get_proxy()
+        if not proxy:
+            return Session()
+        session = _ProxiedSession()
+        session.proxies = {"http": proxy, "https": proxy}
+        return session
+
+    def _get_auth_request(self) -> google.auth.transport.requests.Request:
+        """Return the transport used to refresh credentials."""
+        return google.auth.transport.requests.Request(session=self._get_requests_session())
+
+    def _get_authorized_session(self) -> AuthorizedSession | None:
+        """
+        Return an authorized session for ``google-cloud-*`` clients when the connection sets a proxy.
+
+        Returns None otherwise, so that clients build their default session.
+        """
+        proxy = self._get_proxy()
+        if not proxy:
+            return None
+        session = _ProxiedAuthorizedSession(self.get_credentials(), auth_request=self._get_auth_request())
+        session.proxies = {"http": proxy, "https": proxy}
+        return session
+
     def _get_access_token(self) -> str:
         """Return a valid access token from Google API Credentials."""
         credentials = self.get_credentials()
-        auth_req = google.auth.transport.requests.Request()
+        auth_req = self._get_auth_request()
         # credentials.token is None
         # Need to refresh credentials to populate the token
         credentials.refresh(auth_req)
@@ -511,6 +579,9 @@ class GoogleBaseHook(BaseHook):
         """Return an authorized HTTP object to be used to build a Google cloud service hook connection."""
         credentials = self.get_credentials()
         http = build_http()
+        proxy = self._get_proxy()
+        if proxy:
+            http.proxy_info = _build_httplib2_proxy_info(proxy)
         http = set_user_agent(http, "airflow/" + version.version)
         authed_http = google_auth_httplib2.AuthorizedHttp(credentials, http=http)
         return authed_http
@@ -827,11 +898,13 @@ class _CredentialsToken(Token):
         project: str | None = None,
         session: ClientSession | None = None,
         scopes: Sequence[str] | None = None,
+        auth_request: google.auth.transport.requests.Request | None = None,
     ) -> None:
         _scopes: list[str] | None = list(scopes) if scopes else None
         super().__init__(session=cast("Session", session), scopes=_scopes)
         self.credentials = credentials
         self.project = project
+        self.auth_request = auth_request or google.auth.transport.requests.Request()
         self.acquiring: asyncio.Task[None] | None = None
 
     @classmethod
@@ -847,13 +920,14 @@ class _CredentialsToken(Token):
             project=project,
             session=session,
             scopes=hook.scopes,
+            auth_request=hook._get_auth_request(),
         )
 
     async def get_project(self) -> str | None:
         return self.project
 
     async def refresh(self, *, timeout: int) -> TokenResponse:
-        await sync_to_async(self.credentials.refresh)(google.auth.transport.requests.Request())
+        await sync_to_async(self.credentials.refresh)(self.auth_request)
 
         self.access_token = cast("str", self.credentials.token)
         self.access_token_duration = 3600
@@ -907,6 +981,13 @@ class GoogleBaseAsyncHook(BaseHook):
         if not self._sync_hook:
             self._sync_hook = await sync_to_async(self.sync_hook_class)(**self._hook_kwargs)
         return self._sync_hook
+
+    @asynccontextmanager
+    async def open_client_session(self) -> AsyncIterator[ClientSession]:
+        """Open an aiohttp session routed through the connection's ``proxy`` field, if set."""
+        sync_hook = await self.get_sync_hook()
+        async with ClientSession(proxy=sync_hook._get_proxy()) as session:
+            yield session
 
     async def get_token(self, *, session: ClientSession | None = None) -> _CredentialsToken:
         """Return a Token instance for use in [gcloud-aio](https://talkiq.github.io/gcloud-aio/) clients."""

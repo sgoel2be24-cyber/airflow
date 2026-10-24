@@ -132,6 +132,12 @@ Quota Project ID (optional)
 
     .. warning:: Ensure the service account has permission to use the specified quota project; an invalid or unauthorized project ID will result in an API error.
 
+Proxy URL (optional)
+    URL of a proxy to send Google API requests through, for example
+    ``http://proxy.example.com:3128``. When set, it takes precedence over the ``HTTP_PROXY`` /
+    ``HTTPS_PROXY`` environment variables for this connection. See
+    :ref:`howto/connection:google_cloud_platform:connection_proxy`.
+
 Number of Retries
     Integer, number of times to retry with randomized
     exponential backoff. If all retries fail, the :class:`googleapiclient.errors.HttpError`
@@ -478,6 +484,26 @@ Run the following inside the worker container to confirm the proxy and PySocks a
 
     # PySocks is importable
     python -c "import socks; print('PySocks OK')"
+
+.. _howto/connection:google_cloud_platform:connection_proxy:
+
+Setting a proxy on the connection
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Setting the proxy in environment variables affects every library on the worker. To route only
+Google API calls through a proxy, set the ``proxy`` extra on the connection instead:
+
+.. code-block:: bash
+
+    export AIRFLOW_CONN_GOOGLE_CLOUD_DEFAULT='{"conn_type": "google_cloud_platform", "extra": {"proxy": "http://proxy.example.com:3128"}}'
+
+The connection proxy is used by the ``discovery``-based hooks, by
+:class:`~airflow.providers.google.cloud.hooks.bigquery.BigQueryHook` and its async hooks and
+triggers, and when refreshing credentials. It takes precedence over the proxy environment
+variables, including ``NO_PROXY``.
+
+PySocks is still required for the ``discovery``-based hooks. If it is missing, they raise an
+error instead of silently connecting directly.
 
 Authenticating to Google Sovereign Cloud in Airflow
 ---------------------------------------------------
